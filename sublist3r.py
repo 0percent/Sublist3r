@@ -587,9 +587,11 @@ class DNSdumpster(EnumeratorBaseThreaded):
     # =========================================================
     def http_get(self, url):
         try:
-            self.debug_request("GET", url, headers=self.headers, cookies=self.session.cookies.get_dict())
+            #below line for debug purpose only
+            #self.debug_request("GET", url, headers=self.headers, cookies=self.session.cookies.get_dict())
             resp = self.session.get(url, headers=self.headers, timeout=self.timeout)
-            self.debug_response(resp)
+            #below line for debug purpose only
+            #self.debug_response(resp)
             resp.raise_for_status()
             return resp.text
         except Exception as e:
@@ -599,20 +601,15 @@ class DNSdumpster(EnumeratorBaseThreaded):
 
     def http_post(self, url, headers, data):
         try:
-            self.debug_request(
-                "POST",
-                url,
-                headers=headers,
-                cookies=self.session.cookies.get_dict(),
-                data=data
-            )
+            #below line for debug purpose only
+            #self.debug_request("POST", url, headers=headers, cookies=self.session.cookies.get_dict(), data=data)
             resp = self.session.post(
                 url,
                 headers=headers,
                 data=data,
                 timeout=self.timeout
             )
-            self.debug_response(resp)
+            #self.debug_response(resp)
             resp.raise_for_status()
             return resp.text
         except Exception as e:
@@ -634,15 +631,19 @@ class DNSdumpster(EnumeratorBaseThreaded):
             )
             if match:
                 token = match.group(1)
+                #below line for debug purpose only
+                '''
                 if self.verbose:
                     self.print_(f"{G}[+] Authorization token extracted{W}")
                     self.print_(f"{Y}Token:{W} {token}")
+                '''
                 return token
         except Exception:
             pass
-
+        
         if self.verbose:
             self.print_(f"{R}[!] Authorization token not found{W}")
+        
         return None
 
     # =========================================================
@@ -724,16 +725,22 @@ class DNSdumpster(EnumeratorBaseThreaded):
     # =========================================================
     def enumerate(self):
         try:
+            #below line for debug purpose only
+            '''
             if self.verbose:
                 self.print_(f"{B}[-] DNSdumpster: Loading landing page{W}")
+            '''
 
             landing_html = self.http_get(self.base_url)
             token = self.get_auth_token(landing_html)
             if not token:
                 return self.subdomains
 
+            #below line for debug purpose only
+            '''
             if self.verbose:
                 self.print_(f"{B}[-] DNSdumpster: Submitting target domain{W}")
+            '''
 
             response_html = self.submit_domain(token)
             self.extract_domains(response_html)
