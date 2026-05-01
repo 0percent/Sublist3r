@@ -545,7 +545,10 @@ class DNSdumpster(EnumeratorBaseThreaded):
             silent=silent,
             verbose=verbose
         )
-        headers["Accept-Encoding"] = "identity"
+        print(self.headers)
+        self.headers["Accept-Encoding"] = "identity"
+        print(self.headers)
+        print(self.domain)
     # =========================================================
     # DEBUG HELPERS
     # =========================================================
