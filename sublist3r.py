@@ -522,11 +522,12 @@ class NetcraftEnum(EnumeratorBaseThreaded):
 # DNSdumpster (modified by Ritesh)
 class DNSdumpster(EnumeratorBaseThreaded):
     """
-    DNSdumpster Enumerator with FULL HTTP DEBUGGING
+    DNSdumpster Enumerator (HTMX-based backend, silent & production-safe)
 
-    Verbose mode prints:
-      - HTTP request (method, URL, headers, cookies, body)
-      - HTTP response (status, headers, cookies, body)
+    - Extracts Authorization token from landing page
+    - Submits domain via HTMX API
+    - Parses subdomains from a_rec_table
+    - No debug / HTTP logging
     """
 
     def __init__(self, domain, subdomains=None, q=None, silent=False, verbose=True):
@@ -536,6 +537,9 @@ class DNSdumpster(EnumeratorBaseThreaded):
 
         self.base_url = "https://dnsdumpster.com/"
         self.api_url = "https://api.dnsdumpster.com/htmld/"
+
+        # Preserve exact target domain for POST body
+        self.target = urlparse(domain).netloc if domain.startswith("http") else domain
 
         super().__init__(
             self.base_url,
@@ -547,81 +551,36 @@ class DNSdumpster(EnumeratorBaseThreaded):
             verbose=verbose
         )
 
+        # Disable compression to avoid binary output
         self.headers["Accept-Encoding"] = "identity"
-    # =========================================================
-    # DEBUG HELPERS
-    # =========================================================
-    def debug_request(self, method, url, headers=None, cookies=None, data=None):
-        if not self.verbose:
-            return
-        print(f"{B}--- HTTP REQUEST --------------------------------{W}")
-        print(f"{Y}Method:{W} {method}")
-        print(f"{Y}URL:{W} {url}")
-        if headers:
-            print(f"{Y}Headers:{W}")
-            for k, v in headers.items():
-                print(f"  {k}: {v}")
-        if cookies:
-            print(f"{Y}Cookies:{W} {cookies}")
-        if data:
-            print(f"{Y}Body:{W} {data}")
-        print(f"{B}------------------------------------------------{W}")
 
-    def debug_response(self, resp):
-        if not self.verbose or not resp:
-            return
-        print(f"{G}--- HTTP RESPONSE -------------------------------{W}")
-        print(f"{Y}Status:{W} {resp.status_code}")
-        print(f"{Y}Headers:{W}")
-        for k, v in resp.headers.items():
-            print(f"  {k}: {v}")
-        if resp.cookies:
-            print(f"{Y}Cookies:{W} {resp.cookies.get_dict()}")
-        print(f"{Y}Body (raw):{W}")
-        print(resp.text)
-        print(f"{G}------------------------------------------------{W}")
-
-    # =========================================================
-    # HTTP METHODS
-    # =========================================================
+    # ---------------------------------------------------------
+    # HTTP helpers (silent)
+    # ---------------------------------------------------------
     def http_get(self, url):
         try:
-            self.debug_request("GET", url, headers=self.headers, cookies=self.session.cookies.get_dict())
             resp = self.session.get(url, headers=self.headers, timeout=self.timeout)
-            self.debug_response(resp)
             resp.raise_for_status()
             return resp.text
-        except Exception as e:
-            if self.verbose:
-                self.print_(f"{R}[!] GET failed: {e}{W}")
+        except Exception:
             return None
 
     def http_post(self, url, headers, data):
         try:
-            self.debug_request(
-                "POST",
-                url,
-                headers=headers,
-                cookies=self.session.cookies.get_dict(),
-                data=data
-            )
             resp = self.session.post(
                 url,
                 headers=headers,
                 data=data,
                 timeout=self.timeout
             )
-            self.debug_response(resp)
             resp.raise_for_status()
             return resp.text
-        except Exception as e:
-            if self.verbose:
-                self.print_(f"{R}[!] POST failed: {e}{W}")
+        except Exception:
             return None
 
-    # =========================================================
-    # TOKEN EXTRACTION
-    # =========================================================
+    # ---------------------------------------------------------
+    # Extract Authorization token
+    # ---------------------------------------------------------
     def get_auth_token(self, html):
         if not html:
             return None
@@ -632,21 +591,14 @@ class DNSdumpster(EnumeratorBaseThreaded):
                 re.IGNORECASE
             )
             if match:
-                token = match.group(1)
-                if self.verbose:
-                    self.print_(f"{G}[+] Authorization token extracted{W}")
-                    self.print_(f"{Y}Token:{W} {token}")
-                return token
+                return match.group(1)
         except Exception:
             pass
-
-        if self.verbose:
-            self.print_(f"{R}[!] Authorization token not found{W}")
         return None
 
-    # =========================================================
-    # SUBMIT DOMAIN
-    # =========================================================
+    # ---------------------------------------------------------
+    # Submit domain
+    # ---------------------------------------------------------
     def submit_domain(self, token):
         headers = dict(self.headers)
         headers.update({
@@ -659,12 +611,12 @@ class DNSdumpster(EnumeratorBaseThreaded):
             "Origin": "https://dnsdumpster.com"
         })
 
-        data = {"target": self.domain}
+        data = {"target": self.target}
         return self.http_post(self.api_url, headers, data)
 
-    # =========================================================
-    # PARSE RESPONSE
-    # =========================================================
+    # ---------------------------------------------------------
+    # Parse subdomains from a_rec_table
+    # ---------------------------------------------------------
     def extract_domains(self, html):
         results = []
 
@@ -673,26 +625,24 @@ class DNSdumpster(EnumeratorBaseThreaded):
 
         try:
             table_match = re.search(
-                r'<table[^>]+id=["\']a_rec_table["\'][\s\S]*?</table>',
+                r'&lt;table[^&gt;]+id=["\']a_rec_table["\'][\s\S]*?&lt;/table&gt;',
                 html,
                 re.IGNORECASE
             )
             if not table_match:
-                if self.verbose:
-                    self.print_(f"{Y}[!] a_rec_table not found{W}")
                 return results
 
             table_html = table_match.group(0)
 
             rows = re.findall(
-                r'<tr>([\s\S]*?)</tr>',
+                r'&lt;tr&gt;([\s\S]*?)&lt;/tr&gt;',
                 table_html,
                 re.IGNORECASE
             )
 
             for row in rows:
                 td_match = re.search(
-                    r'<td>\s*([^<\s]+)\s*</td>',
+                    r'&lt;td&gt;\s*([^&lt;\s]+)\s*&lt;/td&gt;',
                     row,
                     re.IGNORECASE
                 )
@@ -712,34 +662,29 @@ class DNSdumpster(EnumeratorBaseThreaded):
                     if self.verbose:
                         self.print_(f"{R}{self.engine_name}: {W}{subdomain}")
 
-        except Exception as e:
-            if self.verbose:
-                self.print_(f"{R}[!] Parsing error: {e}{W}")
+        except Exception:
+            pass
 
         return results
 
-    # =========================================================
-    # MAIN ENUMERATION
-    # =========================================================
+    # ---------------------------------------------------------
+    # Main enumeration
+    # ---------------------------------------------------------
     def enumerate(self):
         try:
-            if self.verbose:
-                self.print_(f"{B}[-] DNSdumpster: Loading landing page{W}")
-
             landing_html = self.http_get(self.base_url)
+            if not landing_html:
+                return self.subdomains
+
             token = self.get_auth_token(landing_html)
             if not token:
                 return self.subdomains
 
-            if self.verbose:
-                self.print_(f"{B}[-] DNSdumpster: Submitting target domain{W}")
-
             response_html = self.submit_domain(token)
             self.extract_domains(response_html)
 
-        except Exception as e:
-            if self.verbose:
-                self.print_(f"{R}[!] Fatal DNSdumpster error: {e}{W}")
+        except Exception:
+            pass
 
         return self.subdomains
 
