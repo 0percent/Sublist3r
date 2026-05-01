@@ -519,101 +519,190 @@ class NetcraftEnum(EnumeratorBaseThreaded):
             pass
         return links_list
 
-# DNSdumpster (from original)
+# DNSdumpster (modified by Ritesh)
 class DNSdumpster(EnumeratorBaseThreaded):
+    """
+    DNSdumpster Enumerator (Updated for 2024+ backend)
+
+    Flow:
+      1) GET https://dnsdumpster.com/
+         → extract Authorization token from hx-headers
+      2) POST https://api.dnsdumpster.com/htmld/
+         → Header: Authorization
+         → Data: target=<domain>
+      3) Parse <table id="a_rec_table">
+         → FIRST <td> of each <tr> is the subdomain
+    """
+
     def __init__(self, domain, subdomains=None, q=None, silent=False, verbose=True):
         subdomains = subdomains or []
-        base_url = 'https://dnsdumpster.com/'
-        self.live_subdomains = []
         self.engine_name = "DNSdumpster"
+        self.domain = domain if not domain.startswith("http") else urlparse(domain).netloc
         self.q = q
-        self.lock = None
-        super(DNSdumpster, self).__init__(base_url, self.engine_name, domain, subdomains, q=q, silent=silent, verbose=verbose)
 
-    def check_host(self, host):
-        is_valid = False
-        Resolver = dns.resolver.Resolver()
-        Resolver.nameservers = ['8.8.8.8', '8.8.4.4']
-        self.lock.acquire()
+        self.base_url = "https://dnsdumpster.com/"
+        self.api_url = "https://api.dnsdumpster.com/htmld/"
+
+        super(DNSdumpster, self).__init__(
+            self.base_url,
+            self.engine_name,
+            self.domain,
+            subdomains,
+            q=q,
+            silent=silent,
+            verbose=verbose
+        )
+
+    # ---------------------------------------------------------
+    # Extract Authorization token from landing page
+    # ---------------------------------------------------------
+    def get_auth_token(self, html):
+        """
+        Extract Authorization token from:
+        hx-headers='{"Authorization":"<TOKEN>"}'
+        """
+        if not html:
+            return None
         try:
-            ip = Resolver.query(host, 'A')[0].to_text()
-            if ip:
-                if self.verbose:
-                    self.print_(f"{R}{self.engine_name}: {W}{host}")
-                is_valid = True
-                self.live_subdomains.append(host)
-        except:
+            match = re.search(
+                r'hx-headers=[\'"]\{[^}]*"Authorization"\s*:\s*"([^"]+)"',
+                html,
+                re.IGNORECASE
+            )
+            if match:
+                return match.group(1)
+        except Exception:
             pass
-        self.lock.release()
-        return is_valid
+        return None
 
-    def req(self, req_method, url, params=None):
-        params = params or {}
+    # ---------------------------------------------------------
+    # Submit domain to DNSdumpster API
+    # ---------------------------------------------------------
+    def submit_domain(self, token):
         headers = dict(self.headers)
-        headers['Referer'] = 'https://dnsdumpster.com'
+        headers.update({
+            "Authorization": token,
+            "Content-Type": "application/x-www-form-urlencoded",
+            "HX-Request": "true",
+            "HX-Target": "results",
+            "HX-Current-URL": "https://dnsdumpster.com/",
+            "Referer": "https://dnsdumpster.com/",
+            "Origin": "https://dnsdumpster.com"
+        })
+
+        data = {"target": self.domain}
+
         try:
-            if req_method == 'GET':
-                resp = self.session.get(url, headers=headers, timeout=self.timeout)
-            else:
-                resp = self.session.post(url, data=params, headers=headers, timeout=self.timeout)
+            resp = self.session.post(
+                self.api_url,
+                headers=headers,
+                data=data,
+                timeout=self.timeout
+            )
+            resp.raise_for_status()
+            return resp.text
         except Exception as e:
-            self.print_(e)
-            resp = None
-        return self.get_response(resp)
-
-    def get_csrftoken(self, resp):
-        csrf_regex = re.compile(r'<input type="hidden" name="csrfmiddlewaretoken" value="(.*?)">', re.S)
-        try:
-            token = csrf_regex.findall(resp)[0]
-            return token.strip()
-        except (IndexError, TypeError):
-            # Try alternative CSRF token patterns
-            alt_csrf_regex = re.compile('<input[^>]*name=["\']csrfmiddlewaretoken["\'][^>]*value=["\'](.*?)["\']', re.S)
-            try:
-                token = alt_csrf_regex.findall(resp)[0]
-                return token.strip()
-            except (IndexError, TypeError):
-                if self.verbose:
-                    self.print_("%s%s: Could not extract CSRF token" % (R, self.engine_name))
-                return ""
-
-    def enumerate(self):
-        self.lock = threading.BoundedSemaphore(value=70)
-        resp = self.req('GET', self.base_url)
-        token = self.get_csrftoken(resp)
-        
-        # If no token found, skip DNSdumpster enumeration
-        if not token:
             if self.verbose:
-                self.print_("%s%s: Skipping enumeration due to missing CSRF token" % (R, self.engine_name))
-            return self.live_subdomains
-            
-        params = {'csrfmiddlewaretoken': token, 'targetip': self.domain}
-        post_resp = self.req('POST', self.base_url, params)
-        self.extract_domains(post_resp)
-        for subdomain in self.subdomains:
-            t = threading.Thread(target=self.check_host, args=(subdomain,))
-            t.start()
-            t.join()
-        return self.live_subdomains
+                self.print_(f"{R}[!] DNSdumpster POST failed: {e}{W}")
+            return None
 
-    def extract_domains(self, resp):
-        tbl_regex = re.compile(r'<a name="hostanchor"><\/a>Host Records.*?<table.*?>(.*?)</table>', re.S)  # Fixed raw string
-        link_regex = re.compile(r'<td class="col-md-4">(.*?)<br>', re.S)
-        links = []
+    # ---------------------------------------------------------
+    # Parse DNSdumpster response table
+    # ---------------------------------------------------------
+    def extract_domains(self, html):
+        """
+        Correct parsing based on real DNSdumpster HTML:
+
+        - Locate table with id="a_rec_table"
+        - For every <tr>, extract ONLY the FIRST <td>
+        - That <td> value is the subdomain
+        """
+        results = []
+
+        if not html:
+            return results
+
         try:
-            results_tbl = tbl_regex.findall(resp)[0]
-        except IndexError:
-            results_tbl = ''
-        links_list = link_regex.findall(results_tbl)
-        links = list(set(links_list))
-        for link in links:
-            subdomain = link.strip()
-            if not subdomain.endswith(self.domain):
-                continue
-            if subdomain and subdomain not in self.subdomains and subdomain != self.domain:
-                self.subdomains.append(subdomain.strip())
-        return links
+            # 1. Isolate the A-record table
+            table_match = re.search(
+                r'<table[^>]+id=["\']a_rec_table["\'][\s\S]*?</table>',
+                html,
+                re.IGNORECASE
+            )
+            if not table_match:
+                return results
+
+            table_html = table_match.group(0)
+
+            # 2. Extract rows
+            rows = re.findall(
+                r'<tr>([\s\S]*?)</tr>',
+                table_html,
+                re.IGNORECASE
+            )
+
+            for row in rows:
+                # 3. FIRST <td> ONLY → this is the hostname
+                td_match = re.search(
+                    r'<td>\s*([^<\s]+)\s*</td>',
+                    row,
+                    re.IGNORECASE
+                )
+                if not td_match:
+                    continue
+
+                subdomain = td_match.group(1).strip()
+
+                # 4. Validate & store
+                if (
+                    subdomain.endswith(self.domain)
+                    and subdomain != self.domain
+                    and subdomain not in self.subdomains
+                ):
+                    self.subdomains.append(subdomain)
+                    results.append(subdomain)
+
+                    if self.verbose:
+                        self.print_(f"{R}{self.engine_name}: {W}{subdomain}")
+
+        except Exception as e:
+            if self.verbose:
+                self.print_(f"{R}[!] DNSdumpster parsing error: {e}{W}")
+
+        return results
+
+    # ---------------------------------------------------------
+    # Main enumeration logic
+    # ---------------------------------------------------------
+    def enumerate(self):
+        try:
+            # Step 1: Fetch landing page
+            landing_html = self.send_req("", 1)
+            if not landing_html:
+                return self.subdomains
+
+            # Step 2: Extract Authorization token
+            token = self.get_auth_token(landing_html)
+            if not token:
+                if self.verbose:
+                    self.print_(
+                        f"{Y}[!] DNSdumpster Authorization token not found — skipping{W}"
+                    )
+                return self.subdomains
+
+            # Step 3: Submit domain to API
+            response_html = self.submit_domain(token)
+            if not response_html:
+                return self.subdomains
+
+            # Step 4: Parse results
+            self.extract_domains(response_html)
+
+        except Exception as e:
+            if self.verbose:
+                self.print_(f"{R}[!] DNSdumpster fatal error: {e}{W}")
+
+        return self.subdomains
 
 # Virustotal (updated to v3)
 class Virustotal(EnumeratorBaseThreaded):
