@@ -678,6 +678,8 @@ class DNSdumpster(EnumeratorBaseThreaded):
         try:
             # Step 1: Fetch landing page
             landing_html = self.send_req("", 1)
+            #for debug
+            print(landing_html)
             if not landing_html:
                 return self.subdomains
 
