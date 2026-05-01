@@ -540,15 +540,14 @@ class DNSdumpster(EnumeratorBaseThreaded):
         super().__init__(
             self.base_url,
             self.engine_name,
+            domain,
             subdomains,
             q=q,
             silent=silent,
             verbose=verbose
         )
-        print(self.headers)
+
         self.headers["Accept-Encoding"] = "identity"
-        print(self.headers)
-        print(self.domain)
     # =========================================================
     # DEBUG HELPERS
     # =========================================================
