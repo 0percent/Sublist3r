@@ -522,15 +522,15 @@ class NetcraftEnum(EnumeratorBaseThreaded):
 # DNSdumpster (modified by Ritesh)
 class DNSdumpster(EnumeratorBaseThreaded):
     """
-    DNSdumpster Enumerator (Updated for 2024+ backend)
+    DNSdumpster Enumerator (Updated for HTMX-based backend)
 
     Flow:
       1) GET https://dnsdumpster.com/
          → extract Authorization token from hx-headers
       2) POST https://api.dnsdumpster.com/htmld/
-         → Header: Authorization
-         → Data: target=<domain>
-      3) Parse <table id="a_rec_table">
+         → Authorization header
+         → target=<domain>
+      3) Parse table id="a_rec_table"
          → FIRST <td> of each <tr> is the subdomain
     """
 
@@ -543,7 +543,7 @@ class DNSdumpster(EnumeratorBaseThreaded):
         self.base_url = "https://dnsdumpster.com/"
         self.api_url = "https://api.dnsdumpster.com/htmld/"
 
-        super(DNSdumpster, self).__init__(
+        super().__init__(
             self.base_url,
             self.engine_name,
             self.domain,
@@ -554,7 +554,41 @@ class DNSdumpster(EnumeratorBaseThreaded):
         )
 
     # ---------------------------------------------------------
-    # Extract Authorization token from landing page
+    # Low-level HTTP helpers with DEBUG output
+    # ---------------------------------------------------------
+    def http_get(self, url):
+        try:
+            resp = self.session.get(url, headers=self.headers, timeout=self.timeout)
+            if self.verbose:
+                self.print_(f"{Y}[DNSdumpster][GET] {resp.status_code}{W}")
+                self.print_(f"{B}Headers:{W} {dict(resp.headers)}")
+            resp.raise_for_status()
+            return resp.text
+        except Exception as e:
+            if self.verbose:
+                self.print_(f"{R}[!] DNSdumpster GET failed: {e}{W}")
+            return None
+
+    def http_post(self, url, headers, data):
+        try:
+            resp = self.session.post(
+                url,
+                headers=headers,
+                data=data,
+                timeout=self.timeout
+            )
+            if self.verbose:
+                self.print_(f"{Y}[DNSdumpster][POST] {resp.status_code}{W}")
+                self.print_(f"{B}Headers:{W} {dict(resp.headers)}")
+            resp.raise_for_status()
+            return resp.text
+        except Exception as e:
+            if self.verbose:
+                self.print_(f"{R}[!] DNSdumpster POST failed: {e}{W}")
+            return None
+
+    # ---------------------------------------------------------
+    # Extract Authorization token
     # ---------------------------------------------------------
     def get_auth_token(self, html):
         """
@@ -563,6 +597,7 @@ class DNSdumpster(EnumeratorBaseThreaded):
         """
         if not html:
             return None
+
         try:
             match = re.search(
                 r'hx-headers=[\'"]\{[^}]*"Authorization"\s*:\s*"([^"]+)"',
@@ -570,13 +605,19 @@ class DNSdumpster(EnumeratorBaseThreaded):
                 re.IGNORECASE
             )
             if match:
-                return match.group(1)
+                token = match.group(1)
+                if self.verbose:
+                    self.print_(f"{G}[+] DNSdumpster auth token extracted{W}")
+                return token
         except Exception:
             pass
+
+        if self.verbose:
+            self.print_(f"{Y}[!] DNSdumpster auth token not found{W}")
         return None
 
     # ---------------------------------------------------------
-    # Submit domain to DNSdumpster API
+    # Submit target domain
     # ---------------------------------------------------------
     def submit_domain(self, token):
         headers = dict(self.headers)
@@ -591,31 +632,16 @@ class DNSdumpster(EnumeratorBaseThreaded):
         })
 
         data = {"target": self.domain}
-
-        try:
-            resp = self.session.post(
-                self.api_url,
-                headers=headers,
-                data=data,
-                timeout=self.timeout
-            )
-            resp.raise_for_status()
-            return resp.text
-        except Exception as e:
-            if self.verbose:
-                self.print_(f"{R}[!] DNSdumpster POST failed: {e}{W}")
-            return None
+        return self.http_post(self.api_url, headers, data)
 
     # ---------------------------------------------------------
-    # Parse DNSdumpster response table
+    # Parse a_rec_table accurately
     # ---------------------------------------------------------
     def extract_domains(self, html):
         """
-        Correct parsing based on real DNSdumpster HTML:
-
-        - Locate table with id="a_rec_table"
-        - For every <tr>, extract ONLY the FIRST <td>
-        - That <td> value is the subdomain
+        정확한 파싱:
+        - table id="a_rec_table"
+        - each <tr> → FIRST <td> only
         """
         results = []
 
@@ -623,18 +649,18 @@ class DNSdumpster(EnumeratorBaseThreaded):
             return results
 
         try:
-            # 1. Isolate the A-record table
             table_match = re.search(
                 r'<table[^>]+id=["\']a_rec_table["\'][\s\S]*?</table>',
                 html,
                 re.IGNORECASE
             )
             if not table_match:
+                if self.verbose:
+                    self.print_(f"{Y}[!] a_rec_table not found{W}")
                 return results
 
             table_html = table_match.group(0)
 
-            # 2. Extract rows
             rows = re.findall(
                 r'<tr>([\s\S]*?)</tr>',
                 table_html,
@@ -642,7 +668,6 @@ class DNSdumpster(EnumeratorBaseThreaded):
             )
 
             for row in rows:
-                # 3. FIRST <td> ONLY → this is the hostname
                 td_match = re.search(
                     r'<td>\s*([^<\s]+)\s*</td>',
                     row,
@@ -653,7 +678,6 @@ class DNSdumpster(EnumeratorBaseThreaded):
 
                 subdomain = td_match.group(1).strip()
 
-                # 4. Validate & store
                 if (
                     subdomain.endswith(self.domain)
                     and subdomain != self.domain
@@ -672,32 +696,23 @@ class DNSdumpster(EnumeratorBaseThreaded):
         return results
 
     # ---------------------------------------------------------
-    # Main enumeration logic
+    # Main enumeration
     # ---------------------------------------------------------
     def enumerate(self):
         try:
-            # Step 1: Fetch landing page
-            landing_html = self.send_req("", 1)
-            #for debug
-            print(landing_html)
-            if not landing_html:
-                return self.subdomains
+            if self.verbose:
+                self.print_(f"{B}[-] DNSdumpster: fetching landing page{W}")
 
-            # Step 2: Extract Authorization token
+            landing_html = self.http_get(self.base_url)
             token = self.get_auth_token(landing_html)
+
             if not token:
-                if self.verbose:
-                    self.print_(
-                        f"{Y}[!] DNSdumpster Authorization token not found — skipping{W}"
-                    )
                 return self.subdomains
 
-            # Step 3: Submit domain to API
+            if self.verbose:
+                self.print_(f"{B}[-] DNSdumpster: submitting domain{W}")
+
             response_html = self.submit_domain(token)
-            if not response_html:
-                return self.subdomains
-
-            # Step 4: Parse results
             self.extract_domains(response_html)
 
         except Exception as e:
