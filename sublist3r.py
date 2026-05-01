@@ -563,20 +563,31 @@ class DNSdumpster(EnumeratorBaseThreaded):
 
     def get_csrftoken(self, resp):
         csrf_regex = re.compile(r'<input type="hidden" name="csrfmiddlewaretoken" value="(.*?)">', re.S)
-        tokens = csrf_regex.findall(resp)
-        
-        if len(tokens) == 0:
-            print("[!] CSRF token not found, skipping DNSdumpster")
-            return None
-
-        return tokens[0]
+        try:
+            token = csrf_regex.findall(resp)[0]
+            return token.strip()
+        except (IndexError, TypeError):
+            # Try alternative CSRF token patterns
+            alt_csrf_regex = re.compile('<input[^>]*name=["\']csrfmiddlewaretoken["\'][^>]*value=["\'](.*?)["\']', re.S)
+            try:
+                token = alt_csrf_regex.findall(resp)[0]
+                return token.strip()
+            except (IndexError, TypeError):
+                if self.verbose:
+                    self.print_("%s%s: Could not extract CSRF token" % (R, self.engine_name))
+                return ""
 
     def enumerate(self):
         self.lock = threading.BoundedSemaphore(value=70)
         resp = self.req('GET', self.base_url)
         token = self.get_csrftoken(resp)
+        
+        # If no token found, skip DNSdumpster enumeration
         if not token:
-           return []
+            if self.verbose:
+                self.print_("%s%s: Skipping enumeration due to missing CSRF token" % (R, self.engine_name))
+            return self.live_subdomains
+            
         params = {'csrfmiddlewaretoken': token, 'targetip': self.domain}
         post_resp = self.req('POST', self.base_url, params)
         self.extract_domains(post_resp)
