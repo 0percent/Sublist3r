@@ -522,16 +522,11 @@ class NetcraftEnum(EnumeratorBaseThreaded):
 # DNSdumpster (modified by Ritesh)
 class DNSdumpster(EnumeratorBaseThreaded):
     """
-    DNSdumpster Enumerator (Updated for HTMX-based backend)
+    DNSdumpster Enumerator with FULL HTTP DEBUGGING
 
-    Flow:
-      1) GET https://dnsdumpster.com/
-         → extract Authorization token from hx-headers
-      2) POST https://api.dnsdumpster.com/htmld/
-         → Authorization header
-         → target=<domain>
-      3) Parse table id="a_rec_table"
-         → FIRST <td> of each <tr> is the subdomain
+    Verbose mode prints:
+      - HTTP request (method, URL, headers, cookies, body)
+      - HTTP response (status, headers, cookies, body)
     """
 
     def __init__(self, domain, subdomains=None, q=None, silent=False, verbose=True):
@@ -553,51 +548,83 @@ class DNSdumpster(EnumeratorBaseThreaded):
             verbose=verbose
         )
 
-    # ---------------------------------------------------------
-    # Low-level HTTP helpers with DEBUG output
-    # ---------------------------------------------------------
+    # =========================================================
+    # DEBUG HELPERS
+    # =========================================================
+    def debug_request(self, method, url, headers=None, cookies=None, data=None):
+        if not self.verbose:
+            return
+        print(f"{B}--- HTTP REQUEST --------------------------------{W}")
+        print(f"{Y}Method:{W} {method}")
+        print(f"{Y}URL:{W} {url}")
+        if headers:
+            print(f"{Y}Headers:{W}")
+            for k, v in headers.items():
+                print(f"  {k}: {v}")
+        if cookies:
+            print(f"{Y}Cookies:{W} {cookies}")
+        if data:
+            print(f"{Y}Body:{W} {data}")
+        print(f"{B}------------------------------------------------{W}")
+
+    def debug_response(self, resp):
+        if not self.verbose or not resp:
+            return
+        print(f"{G}--- HTTP RESPONSE -------------------------------{W}")
+        print(f"{Y}Status:{W} {resp.status_code}")
+        print(f"{Y}Headers:{W}")
+        for k, v in resp.headers.items():
+            print(f"  {k}: {v}")
+        if resp.cookies:
+            print(f"{Y}Cookies:{W} {resp.cookies.get_dict()}")
+        print(f"{Y}Body (raw):{W}")
+        print(resp.text)
+        print(f"{G}------------------------------------------------{W}")
+
+    # =========================================================
+    # HTTP METHODS
+    # =========================================================
     def http_get(self, url):
         try:
+            self.debug_request("GET", url, headers=self.headers, cookies=self.session.cookies.get_dict())
             resp = self.session.get(url, headers=self.headers, timeout=self.timeout)
-            if self.verbose:
-                self.print_(f"{Y}[DNSdumpster][GET] {resp.status_code}{W}")
-                self.print_(f"{B}Headers:{W} {dict(resp.headers)}")
+            self.debug_response(resp)
             resp.raise_for_status()
             return resp.text
         except Exception as e:
             if self.verbose:
-                self.print_(f"{R}[!] DNSdumpster GET failed: {e}{W}")
+                self.print_(f"{R}[!] GET failed: {e}{W}")
             return None
 
     def http_post(self, url, headers, data):
         try:
+            self.debug_request(
+                "POST",
+                url,
+                headers=headers,
+                cookies=self.session.cookies.get_dict(),
+                data=data
+            )
             resp = self.session.post(
                 url,
                 headers=headers,
                 data=data,
                 timeout=self.timeout
             )
-            if self.verbose:
-                self.print_(f"{Y}[DNSdumpster][POST] {resp.status_code}{W}")
-                self.print_(f"{B}Headers:{W} {dict(resp.headers)}")
+            self.debug_response(resp)
             resp.raise_for_status()
             return resp.text
         except Exception as e:
             if self.verbose:
-                self.print_(f"{R}[!] DNSdumpster POST failed: {e}{W}")
+                self.print_(f"{R}[!] POST failed: {e}{W}")
             return None
 
-    # ---------------------------------------------------------
-    # Extract Authorization token
-    # ---------------------------------------------------------
+    # =========================================================
+    # TOKEN EXTRACTION
+    # =========================================================
     def get_auth_token(self, html):
-        """
-        Extract Authorization token from:
-        hx-headers='{"Authorization":"<TOKEN>"}'
-        """
         if not html:
             return None
-
         try:
             match = re.search(
                 r'hx-headers=[\'"]\{[^}]*"Authorization"\s*:\s*"([^"]+)"',
@@ -607,18 +634,19 @@ class DNSdumpster(EnumeratorBaseThreaded):
             if match:
                 token = match.group(1)
                 if self.verbose:
-                    self.print_(f"{G}[+] DNSdumpster auth token extracted{W}")
+                    self.print_(f"{G}[+] Authorization token extracted{W}")
+                    self.print_(f"{Y}Token:{W} {token}")
                 return token
         except Exception:
             pass
 
         if self.verbose:
-            self.print_(f"{Y}[!] DNSdumpster auth token not found{W}")
+            self.print_(f"{R}[!] Authorization token not found{W}")
         return None
 
-    # ---------------------------------------------------------
-    # Submit target domain
-    # ---------------------------------------------------------
+    # =========================================================
+    # SUBMIT DOMAIN
+    # =========================================================
     def submit_domain(self, token):
         headers = dict(self.headers)
         headers.update({
@@ -634,15 +662,10 @@ class DNSdumpster(EnumeratorBaseThreaded):
         data = {"target": self.domain}
         return self.http_post(self.api_url, headers, data)
 
-    # ---------------------------------------------------------
-    # Parse a_rec_table accurately
-    # ---------------------------------------------------------
+    # =========================================================
+    # PARSE RESPONSE
+    # =========================================================
     def extract_domains(self, html):
-        """
-        정확한 파싱:
-        - table id="a_rec_table"
-        - each <tr> → FIRST <td> only
-        """
         results = []
 
         if not html:
@@ -691,33 +714,32 @@ class DNSdumpster(EnumeratorBaseThreaded):
 
         except Exception as e:
             if self.verbose:
-                self.print_(f"{R}[!] DNSdumpster parsing error: {e}{W}")
+                self.print_(f"{R}[!] Parsing error: {e}{W}")
 
         return results
 
-    # ---------------------------------------------------------
-    # Main enumeration
-    # ---------------------------------------------------------
+    # =========================================================
+    # MAIN ENUMERATION
+    # =========================================================
     def enumerate(self):
         try:
             if self.verbose:
-                self.print_(f"{B}[-] DNSdumpster: fetching landing page{W}")
+                self.print_(f"{B}[-] DNSdumpster: Loading landing page{W}")
 
             landing_html = self.http_get(self.base_url)
             token = self.get_auth_token(landing_html)
-
             if not token:
                 return self.subdomains
 
             if self.verbose:
-                self.print_(f"{B}[-] DNSdumpster: submitting domain{W}")
+                self.print_(f"{B}[-] DNSdumpster: Submitting target domain{W}")
 
             response_html = self.submit_domain(token)
             self.extract_domains(response_html)
 
         except Exception as e:
             if self.verbose:
-                self.print_(f"{R}[!] DNSdumpster fatal error: {e}{W}")
+                self.print_(f"{R}[!] Fatal DNSdumpster error: {e}{W}")
 
         return self.subdomains
 
