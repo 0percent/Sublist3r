@@ -548,8 +548,6 @@ class DNSdumpster(EnumeratorBaseThreaded):
             verbose=verbose
         )
 
-        self.headers["Accept-Encoding"] = "identity"
-
     # =========================================================
     # DEBUG HELPERS
     # =========================================================
