@@ -532,7 +532,6 @@ class DNSdumpster(EnumeratorBaseThreaded):
     def __init__(self, domain, subdomains=None, q=None, silent=False, verbose=True):
         subdomains = subdomains or []
         self.engine_name = "DNSdumpster"
-        self.domain = domain if not domain.startswith("http") else urlparse(domain).netloc
         self.q = q
 
         self.base_url = "https://dnsdumpster.com/"
@@ -541,13 +540,12 @@ class DNSdumpster(EnumeratorBaseThreaded):
         super().__init__(
             self.base_url,
             self.engine_name,
-            self.domain,
             subdomains,
             q=q,
             silent=silent,
             verbose=verbose
         )
-    headers["Accept-Encoding"] = "identity"
+        headers["Accept-Encoding"] = "identity"
     # =========================================================
     # DEBUG HELPERS
     # =========================================================
