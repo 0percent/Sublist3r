@@ -534,7 +534,6 @@ class DNSdumpster(EnumeratorBaseThreaded):
         self.engine_name = "DNSdumpster"
         self.domain = domain if not domain.startswith("http") else urlparse(domain).netloc
         self.q = q
-        self.headers["Accept-Encoding"] = "identity"
 
         self.base_url = "https://dnsdumpster.com/"
         self.api_url = "https://api.dnsdumpster.com/htmld/"
@@ -548,6 +547,8 @@ class DNSdumpster(EnumeratorBaseThreaded):
             silent=silent,
             verbose=verbose
         )
+
+        self.headers["Accept-Encoding"] = "identity"
 
     # =========================================================
     # DEBUG HELPERS
