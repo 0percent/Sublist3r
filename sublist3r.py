@@ -30,6 +30,8 @@ try:
 except:
     pass
 
+HTTP_DEBUG = True   # master switch for all non-DNSdumpster engines (values: True/False)
+
 # Console Colors (using colorama for cross-platform)
 try:
     import colorama
@@ -46,6 +48,39 @@ except ImportError:
 def no_color():
     global G, Y, B, R, W
     G = Y = B = R = W = ''
+
+class DebugSession(requests.Session):
+    def request(self, method, url, **kwargs):
+        resp = super().request(method, url, **kwargs)
+
+        if HTTP_DEBUG:
+            print(f"\n{B}=== HTTP REQUEST ==={W}")
+            print(f"{Y}{method}{W} {url}")
+
+            headers = kwargs.get("headers", {})
+            if headers:
+                print(f"{Y}Request Headers:{W}")
+                for k, v in headers.items():
+                    print(f"  {k}: {v}")
+
+            data = kwargs.get("data") or kwargs.get("params")
+            if data:
+                print(f"{Y}Request Data:{W} {data}")
+
+            print(f"{G}=== HTTP RESPONSE ==={W}")
+            print(f"{Y}Status:{W} {resp.status_code}")
+
+            print(f"{Y}Response Headers:{W}")
+            for k, v in resp.headers.items():
+                print(f"  {k}: {v}")
+
+            print(f"{Y}Response Body:{W}")
+            print(resp.text)
+
+            print(f"{B}====================={W}\n")
+
+        return resp
+        
 
 def banner():
     print(f"""%s
@@ -99,7 +134,8 @@ class EnumeratorBase(object):
     def __init__(self, base_url, engine_name, domain, subdomains=None, silent=False, verbose=True):
         subdomains = subdomains or []
         self.domain = urlparse(domain).netloc
-        self.session = requests.Session()
+        #self.session = requests.Session()
+        self.session = DebugSession()
         self.subdomains = []
         self.timeout = 25
         self.base_url = base_url
