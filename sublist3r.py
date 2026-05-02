@@ -255,6 +255,8 @@ class GoogleEnum(EnumeratorBaseThreaded):
         self.MAX_PAGES = 200
         super(GoogleEnum, self).__init__(base_url, self.engine_name, domain, subdomains, q=q, silent=silent, verbose=verbose)
 
+        self.headers["Accept-Encoding"] = "identity"
+
     def extract_domains(self, resp):
         links_list = []
         try:
